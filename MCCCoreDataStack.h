@@ -5,6 +5,7 @@
 //  Copyright (c) 2012 Monte-Carlo Computing. All rights reserved.
 //
 
+#import <CoreData/CoreData.h>
 #import <Foundation/Foundation.h>
 
 @interface NSError (MCCCoreDataStackAddon)
@@ -12,6 +13,7 @@
 @end
 
 @interface NSManagedObject (MCCCoreDataStackAddon)
+- (NSDictionary *)dictionary;
 + (id)managedObjectInContext:(NSManagedObjectContext *)context;
 + (NSFetchRequest *)fetchRequest;
 
@@ -23,6 +25,15 @@
 
 + (void)findWithContext:(NSManagedObjectContext *)context request:(NSFetchRequest *)request callback:(void(^)(NSError *error, NSArray *data))block;
 + (void)findWithRequest:(NSFetchRequest *)request callback:(void(^)(NSError *error, NSArray *data))block;
+
+typedef enum _DUIOperation {
+  DUIOperationInsert,
+  DUIOperationUpdate,
+  DUIOperationDelete
+} DUIOperation;
+
+/* Delete Update Insert with a handler block */
++ (BOOL)DUIWithContext:(NSManagedObjectContext *)context predicate:(NSPredicate *)predicate objects:(NSArray *)newObjects primaryKey:(NSString *)pkey handler:(void(^)(DUIOperation op, id managedObject, NSDictionary *data))block;
 @end
 
 @interface MCCCoreDataStack : NSObject
@@ -34,6 +45,7 @@
 + (void)setDBBaseDir:(NSString *)path; /* default is the library directory inside the bundle */
 + (void)setTrivialUpdatesOptions:(NSDictionary *)options; /* default is YES for NSMigratePersistentStoresAutomaticallyOption + NSInferMappingModelAutomaticallyOption + NSIgnorePersistentStoreVersioningOption, you should set these options prior to creating your stack */
 + (void)setOnStoreCreated:(id)block; /* triggered the first time the store is created */
++ (void)setOnPersistentStoreCoordinatorCreationFailed:(void(^)(NSURL*storeURL))block;
 
 // Default Stack accessor
 + (NSPersistentStoreCoordinator *)coordinator;

@@ -6,8 +6,7 @@
 //
 
 #import "MCCCoreDataStack.h"
-
-#define NSManagedObjectContextSaveDidFailNotification @"NSManagedObjectContextSaveDidFailNotification"
+#import <objc/runtime.h>
 
 @implementation NSError (MCCCoreDataStackAddon)
 - (NSError *)errorByAddingValidationError:(NSError *)secondError {
@@ -30,6 +29,25 @@
 @end
 
 @implementation NSManagedObject (MCCCoreDataStackAddon)
+
+/* Taken from http://stackoverflow.com/questions/10341515/get-properties-of-nsmanagedobject-as-nsdictionary */
+- (NSDictionary *)dictionary {
+  unsigned int count;
+  objc_property_t *properties = class_copyPropertyList([self class], &count);
+  NSMutableDictionary *dictionary = [NSMutableDictionary dictionaryWithCapacity:count];
+  
+  for(int i = 0; i < count; i++) {
+    objc_property_t property = properties[i];
+    NSString *name = [NSString stringWithCString:property_getName(property) encoding:NSUTF8StringEncoding];
+    id obj = [self valueForKey:name];
+    if (obj) {
+      [dictionary setObject:obj forKey:name];
+    }
+  }
+  
+  free(properties);
+  return dictionary;
+}
 
 + (id)managedObjectInContext:(NSManagedObjectContext *)context {
   NSAssert([self class] != [NSManagedObject class], @"Only works on NSManagedObject subclass with entities named after the class");
@@ -74,7 +92,9 @@ static NSMutableDictionary *entityDescriptions = nil;
 
 + (void)countWithContext:(NSManagedObjectContext *)context predicate:(NSPredicate *)predicate callback:(void(^)(NSError *error, NSInteger count))block {
   NSError *countError = nil;
-  NSInteger count = [context countForFetchRequest:[self fetchRequest] error:&countError];
+  NSFetchRequest *request = [self fetchRequest];
+  request.predicate = predicate;
+  NSInteger count = [context countForFetchRequest:request error:&countError];
   block(countError, count);
 }
 
@@ -116,6 +136,80 @@ static NSMutableDictionary *entityDescriptions = nil;
   return FALSE;
 }
 
++ (BOOL)DUIWithContext:(NSManagedObjectContext *)context predicate:(NSPredicate *)predicate objects:(NSArray *)newObjects primaryKey:(NSString *)pkey handler:(void(^)(DUIOperation op, id managedObject, NSDictionary *data))block {
+  NSAssert(pkey, @"Primary Key is required");
+  
+  __block int count = -1;
+  [self countWithContext:context predicate:predicate callback:^(NSError *error, NSInteger n) {
+    if (error) return;
+    count = n;
+  }];
+  
+  if (count < 0) return FALSE;
+  
+  if (count == 0) {
+    // Insert all
+    [newObjects enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
+      block(DUIOperationInsert, [self managedObjectInContext:context], obj);
+    }];
+    return TRUE;
+  }
+  
+  __block BOOL ok = TRUE;
+  NSArray *sort = @[ [NSSortDescriptor sortDescriptorWithKey:pkey ascending:YES] ];
+  
+  // Get deletables
+  NSFetchRequest *deletableRequest = [self fetchRequest];
+  deletableRequest.fetchBatchSize = 10;
+  deletableRequest.sortDescriptors = sort;
+  deletableRequest.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:[NSArray arrayWithObjects:
+                                  [NSPredicate predicateWithFormat:@"NOT %K IN %@", pkey, [newObjects valueForKey:pkey]], predicate, nil
+                                ]];
+  
+  [self findWithContext:context request:deletableRequest callback:^(NSError *error, NSArray *data) {
+    if (error) { ok = FALSE; return; }
+    
+    [data enumerateObjectsUsingBlock:^(NSManagedObject *obj, NSUInteger idx, BOOL *stop) {
+      block(DUIOperationDelete, obj, nil);
+    }];
+  }];
+  
+  
+  
+  
+  // Get updatable entries
+  __block NSArray *updaters = nil;
+  NSFetchRequest *updatableRequest = [self fetchRequest];
+  updatableRequest.fetchBatchSize = 10;
+  updatableRequest.sortDescriptors = sort;
+  updatableRequest.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:[NSArray arrayWithObjects:
+                                [NSPredicate predicateWithFormat:@"%K IN %@", pkey, [newObjects valueForKey:pkey]], predicate, nil
+                                ]];
+  
+  [self findWithContext:context request:updatableRequest callback:^(NSError *error, NSArray *data) {
+    if (error) { ok = FALSE; return; }
+    
+    // Get the newObjects that are updaters
+    updaters = [newObjects filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"%K IN %@", pkey, [data valueForKey:pkey]]];
+    updaters = [updaters sortedArrayUsingDescriptors:sort];
+    
+    [data enumerateObjectsUsingBlock:^(NSManagedObject *obj, NSUInteger idx, BOOL *stop) {
+      block(DUIOperationUpdate, obj, [updaters objectAtIndex:idx]);
+    }];
+
+  }];
+    
+  // Get the inserters
+  NSMutableArray *inserters = [[newObjects mutableCopy]autorelease];
+  [inserters removeObjectsInArray:updaters];
+  
+  [inserters enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
+    block(DUIOperationInsert, [self managedObjectInContext:context], obj);
+  }];
+  
+  return ok;
+}
+
 @end
 
 
@@ -153,6 +247,14 @@ static id onStoreCreated = nil;
   if (onStoreCreated) Block_release(onStoreCreated);
   if (block) {
     onStoreCreated = Block_copy(block);
+  }
+}
+
+static id onPersistentStoreCoordinatorCreationFailed = nil;
++ (void)setOnPersistentStoreCoordinatorCreationFailed:(void(^)(NSURL*storeURL))block {
+  if (onPersistentStoreCoordinatorCreationFailed) Block_release(onPersistentStoreCoordinatorCreationFailed);
+  if (block) {
+    onPersistentStoreCoordinatorCreationFailed = Block_copy(block);
   }
 }
 
@@ -307,9 +409,9 @@ static MCCCoreDataStack *defaultStack = nil;
 - (NSPersistentStoreCoordinator *)persistentStoreCoordinatorWithModel:(NSManagedObjectModel *)model sqliteStoreWithPath:(NSString *)path {
   if (!trivialUpdatesOptions) {
     trivialUpdatesOptions = [NSDictionary dictionaryWithObjectsAndKeys:
-      [NSNumber numberWithBool:YES], NSMigratePersistentStoresAutomaticallyOption,
-      [NSNumber numberWithBool:YES], NSInferMappingModelAutomaticallyOption,
-      [NSNumber numberWithBool:YES], NSIgnorePersistentStoreVersioningOption,
+//      [NSNumber numberWithBool:YES], NSMigratePersistentStoresAutomaticallyOption,
+//      [NSNumber numberWithBool:YES], NSInferMappingModelAutomaticallyOption,
+//      [NSNumber numberWithBool:YES], NSIgnorePersistentStoreVersioningOption,
     nil];
   }
   
@@ -328,7 +430,9 @@ static MCCCoreDataStack *defaultStack = nil;
   }
   
   if (![persistentStoreCoordinator addPersistentStoreWithType:NSSQLiteStoreType configuration:nil URL:storeURL options:trivialUpdatesOptions error:&error]) {
-    [[self class]persistentStoreCoordinatorCreationFailedForStoreURL:storeURL withError:error];
+    if (onPersistentStoreCoordinatorCreationFailed)
+      ((void(^)(NSURL *))onPersistentStoreCoordinatorCreationFailed)(storeURL);
+    else [[self class]persistentStoreCoordinatorCreationFailedForStoreURL:storeURL withError:error];
   } else {
     if (willCreateStore && onStoreCreated) {
       ((void(^)(void))onStoreCreated)();
