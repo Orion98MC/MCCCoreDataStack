@@ -8,6 +8,14 @@
 #import "MCCCoreDataStack.h"
 #import <objc/runtime.h>
 
+@implementation SandBoxContext
+- (void)dealloc {
+  self.userInfo = nil;
+  [super dealloc];
+}
+@end
+
+
 @implementation NSError (MCCCoreDataStackAddon)
 - (NSError *)errorByAddingValidationError:(NSError *)secondError {
   NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
@@ -310,6 +318,11 @@ static MCCCoreDataStack *defaultStack = nil;
   return [defaultStack context];
 }
 
++ (SandBoxContext *)sandBoxContext {
+  NSAssert(defaultStack, @"default stack not setup yet");
+  return [defaultStack sandBoxContext];
+}
+
 + (void)setMetaValue:(id)value forKey:(NSString *)key {
   NSAssert(defaultStack, @"default stack not setup yet");
   [defaultStack setMetaValue:value forKey:key];
@@ -365,6 +378,14 @@ static MCCCoreDataStack *defaultStack = nil;
   [managedObjectContext setUndoManager:nil];
   return managedObjectContext;
 }
+
+- (SandBoxContext *)sandBoxContext {
+  SandBoxContext *managedObjectContext = [[[SandBoxContext alloc]init]autorelease];
+  [managedObjectContext setPersistentStoreCoordinator:coordinator];
+  [managedObjectContext setUndoManager:nil];
+  return managedObjectContext;
+}
+
 
 - (void)setMetaValue:(id)value forKey:(NSString *)key {
   NSPersistentStore *store = [[coordinator persistentStores]objectAtIndex:0];

@@ -12,6 +12,10 @@
 - (NSError *)errorByAddingValidationError:(NSError *)secondError;
 @end
 
+@interface SandBoxContext : NSManagedObjectContext
+@property (retain, nonatomic) id userInfo;
+@end
+
 @interface NSManagedObject (MCCCoreDataStackAddon)
 - (NSDictionary *)dictionary;
 + (id)managedObjectInContext:(NSManagedObjectContext *)context;
@@ -50,6 +54,7 @@ typedef enum _DUIOperation {
 // Default Stack accessor
 + (NSPersistentStoreCoordinator *)coordinator;
 + (NSManagedObjectContext *)context; /* return a context for the default stack */
++ (SandBoxContext *)sandBoxContext;
 + (void)setMetaValue:(id)value forKey:(NSString *)key;
 + (id)metaValueForKey:(NSString *)key;
 + (BOOL)resetStack;
@@ -57,6 +62,7 @@ typedef enum _DUIOperation {
 // Custom stack accessor
 - (NSPersistentStoreCoordinator *)coordinator;
 - (NSManagedObjectContext *)context; /* returns a context for this stack */
+- (SandBoxContext *)sandBoxContext;
 - (void)setMetaValue:(id)value forKey:(NSString *)key;
 - (id)metaValueForKey:(NSString *)key;
 
